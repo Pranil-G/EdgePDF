@@ -38,7 +38,6 @@ def _idx():
         return json.load(f)
 
 def norm(a):
-    a = a.lower().replace("0x", "").lstrip("f")
     a = a.lower().replace("0x", "")
     if a.startswith("fun_"): a = a[4:]
     if a.startswith("sub_"): a = a[4:]

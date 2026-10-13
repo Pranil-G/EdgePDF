@@ -11,6 +11,10 @@ Set the corpus root first; the scripts default to
 | `tumap.py <rva>:<name> …` | maps a `__FILE__` string's RVA to every function that references it, i.e. **translation-unit recovery**. This is how the jp2k component (13 TUs) and the `t3::color` ICC engine were located without a PDB |
 | `extract_range.py <lo>-<hi> …` | bulk-extract pseudocode for whole regions so grep-scale pattern scans work |
 | `whichfn.sh <file> <line…>` | line number in an extracted file -> enclosing function |
+| `scanmemcpy.py` | memcpy sites whose length base is disjoint from the destination base |
+| `unguarded.py` / `unguarded2.py` | indexed writes whose index never appears in any comparison (3 operand forms) |
+| `narrowctr.py` | narrowed 8/16-bit loop increments compared against wider bounds |
+| `gen_finding006.py <outdir>` | **PoC generator** for FINDING-006. Builds conforming JPEG 2000 codestreams, JP2 containers and `/JPXDecode` PDF wrappers from scratch, including a tag-tree packet-header encoder, so arbitrary code-block/tile-part configurations can be emitted. Not a corpus tool — it needs nothing but Python |
 
 Usage notes:
 
