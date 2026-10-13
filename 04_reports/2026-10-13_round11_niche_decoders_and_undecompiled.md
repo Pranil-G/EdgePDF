@@ -545,6 +545,29 @@ before the store.
   including the `{0.0, 1.0, matte[0..n-1]}` rebuild at `0x1804F0D23`, takes the **actual** element
   count from the vector. The `>= 1` test is only an is-non-empty check.
 
+## 14. Widened unguarded-write scan — second pass
+
+The §12 scan matched only `*(T *)(BASE + IDX * K) = ...`. Ghidra also emits the operands reversed
+(`*(T *)(IDX * K + BASE) = ...`) and in array form (`BASE[IDX] = ...`). Re-running with all three
+forms raised the hit count to 61 functions. Triaged, with the lesson recorded:
+
+- `FUN_18018B1D2` (FreeType glyph-name table, next door to FINDING-001's `sub_18018B4E0`, so a
+  priority): builds a `num_glyphs`-entry pointer array via `FUN_18016C35D(pool, n)` (which
+  allocates and zeroes `n*8`) and fills it with `FT_Get_Glyph_Name` results. The counter pair
+  `(uVar8, uVar9)` advances so the last write is index `num_glyphs - 1`. In bounds.
+- `FUN_18090FD34` / `FUN_1808F9580` (EBCOT decoding passes): `local_1b0`, `local_228` etc. are
+  declared `byte *` — Ghidra variable reuse, **not** stack arrays. The writes are pointer
+  dereferences with precomputed strides, so the scan's `local_*` names are not evidence of a stack
+  buffer. This is the scan's main false-positive source and the reason its precision is low.
+- `FUN_180917737` (inverse DWT 9/7 lifting — the `param_7 ± 2/3/4 + width` locals are the filter
+  taps): Ghidra renders the size as `local_4c = 0; ...; FUN_180885943((longlong)local_4c)`, which
+  reads as a zero-sized allocation followed by writes. It is not: `1809177A9: lea rax, [rsp+0xac]`
+  immediately before `call 0x180918008` passes `&local_4c` as a dropped stack out-parameter, so the
+  allocation gets the computed size. **This is the third instance this round of Ghidra dropping a
+  size out-parameter and thereby manufacturing a false heap overflow** (the others: `FUN_18015AC40`
+  in the JBIG2 table parser, §4, and `FUN_18017B7F5` in FINDING-005). Treat
+  `alloc(<locally-zeroed var>)` as an artifact until the call that fills it is read in assembly.
+
 ## Leads left open, in priority order
 
 1. **The Type 4 evaluator itself.** The compiler/emitter is mapped; the interpreter that consumes
