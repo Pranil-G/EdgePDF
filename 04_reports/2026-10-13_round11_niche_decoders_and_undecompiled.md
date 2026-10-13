@@ -15,7 +15,17 @@ fuzzer or to a decompiler.
 
 ## Result
 
-**No exploitable memory-corruption bug confirmed.** Seven surfaces were audited, four of which had
+**FINDING-006 — a critical, zero-click heap buffer overflow in the JPEG 2000 EBCOT state buffers.**
+A later-tile-part `COC` rewrites a tile-component's code-block size exponents (`xcb`/`ycb`) after
+the EBCOT bit-plane state buffers have been sized from them, and the one consistency check on that
+path compares only the decomposition level. See
+`FINDING-006_mspdf_jp2k_coc_codeblock_size_ebcot_state_overflow.md`. It is the same root cause as
+FINDING-002 (the missing `TPsot` guard on the per-component `COC` block) applied to the one field
+no downstream check covers, so it reaches the decoder on the path Edge always takes.
+
+Also **FINDING-005**, a concrete but unreachable glyph-bitmap `pitch` vs `width` overflow.
+
+Everything else below is negative space. Seven surfaces were audited, four of which had
 never been examined in any prior round. Two concrete specification deviations were found and both
 are provably compensated at their use sites. The value of the round is negative-space plus the
 specific invariants each surface depends on, recorded so a future build can be regression-checked
@@ -607,8 +617,16 @@ from `__FILE__` xrefs, which is how the ICC engine was found at all.
 
 ## Honest status
 
-No **exploitable** memory-corruption bug in round 11; one new concrete defect, not reachable as
-shipped (FINDING-005). Five surfaces that no prior round had touched
+Round 11 produced **FINDING-006**, a reachable critical heap overflow, plus **FINDING-005**, a
+concrete defect that is not reachable as shipped. FINDING-006 still needs a live PoC run to be
+submission-ready; the static chain is complete but this session has no Windows host for the Frida
+harness the earlier rounds used.
+
+What found it was not a scan but a question about *which* field a known-unguarded write touches:
+FINDING-002 had already proven the `COC` block mutates a tile-component's coding style from a later
+tile-part, and had closed it because the consumer validates the decomposition level. Re-reading the
+same 0xE0-byte copy for the *other* fields it carries, and then asking what each one is used to
+size, took four reads. Five surfaces that no prior round had touched
 (the `t3::color` ICC engine, LZW, JBIG2 segment type 53, the two large undecompiled functions, and
 the JPX packet-iteration/POC layer) are now read and clean, round 10's open CCITT question is
 answered in the negative with proof, two real spec deviations were found and shown compensated at
