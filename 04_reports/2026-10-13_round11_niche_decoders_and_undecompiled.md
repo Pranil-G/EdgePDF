@@ -412,6 +412,139 @@ The resolution index is the one quantity *not* re-checked here — which is exac
 latent path, already documented and guarded upstream by `sub_18088F0E2`'s decomposition-level
 equality test.
 
+## 10. ICC CLUT interpolators — the deep logic, audited; the Linear one is safe by invariant only
+
+§2 cleared the ICC *parse*. This covers the interpolators themselves, which is where the real
+index arithmetic lives. Entry points, via `FUN_180205078` (selects by colour-space pair):
+
+| step | transform | selected for |
+|---|---|---|
+| `ICCStepMDTableLinear` | `FUN_1802057C0` (872 B) | CMYK -> GRAY/XYZ/RGB, i.e. **4-D multilinear** |
+| `ICCStepMDTableTetrahedral` | `FUN_180205F70` | RGB -> RGB |
+| `ICCStepMDTableHedral` | `FUN_180206480` / `FUN_180206C24` | general, incl. **4-D tetrahedral** |
+
+Object layout (base ctor `FUN_1802053CA`, field ctor `FUN_1802052FC`):
+`nIn@0x18, nOut@0x1c, gridPoints@0x28, scale[4]@0x78, maxIdx[4]@0x88, corner offsets@0x98..0xd0,
+clut@0x60, clutCount@0x68`.
+
+**There is a real asymmetry between the two 4-D interpolators**, and it is the FINDING-002 shape:
+
+- `FUN_180206C24` (tetrahedral) checks **everything** — the base index
+  (`if ((ulonglong)uVar2 < clutCount)`) *and* every one of the 8 simplex corner indices
+  (`if ((clutCount <= uVar2) || (clutCount <= uVar7)) break;` falling into
+  `invalidInstructionException`).
+- `FUN_1802057C0` (multilinear) checks **only the base**. All 15 neighbour-corner offsets at
+  `param_1+0x98..0xd0` are added to the base pointer with no bound test at all.
+
+So the multilinear path is safe only if the per-axis clamp guarantees the hypercube never steps
+off the grid. It does, and the proof is tight enough to be worth recording, because any change to
+either side breaks it:
+
+`FUN_1802053CA` sets, per axis, `scale[i] = g_i - 1` and **`maxIdx[i] = g_i - 2`** (both 0/1.0 when
+`g_i < 2`). `FUN_1802052FC` sets the corner strides from the same array:
+`d3 = nOut`, `s2 = g3*nOut`, `s1 = g2*g3*nOut`, `s0 = g1*g2*g3*nOut`, plus all 15 sums. The
+transform clamps `a_i = min(floor(v_i * scale[i]), maxIdx[i])`, so with `a_i <= g_i - 2`:
+
+```
+base_max/nOut   = (((g1*(g0-2) + (g1-2))*g2 + (g2-2))*g3 + (g3-2))
+                = P - g1*g2*g3 - g2*g3 - g3 - 2            where P = g0*g1*g2*g3
+corner_max/nOut = g1*g2*g3 + g2*g3 + g3 + 1
+total_max       = nOut*(P - 1)
+clutCount       = nOut*P
+```
+
+The three floats read at `total_max..total_max+2` are therefore **exactly the last CLUT element**.
+With the minimum grid (`g_i = 2`, `nOut = 3`) that is indices 45..47 of 48. Zero margin.
+
+The load-bearing invariants, i.e. what to regression-check on any future build:
+
+1. `maxIdx[i] == g_i - 2`, not `g_i - 1`. Changing this to `g_i - 1` turns `FUN_1802057C0` into an
+   unchecked OOB read of up to `(g1*g2*g3 + g2*g3 + g3 + 1)*nOut` floats past the CLUT.
+2. `g_i >= 2` for **every** axis. If any axis had `g_i == 1` the clamp collapses to 0 while the
+   stride for that axis stays non-zero, and the corner steps outside: for `g = (2,2,2,1)` the max
+   read index is 24..26 against a `clutCount` of 24.
+3. `nIn <= 4`, so `scale[]`/`maxIdx[]` (4 entries each at +0x78/+0x88) are not overrun.
+
+All three hold. (2) is the interesting one because the two tag families establish it differently:
+
+- `mft1`/`mft2` carry a **single** grid-point byte for all dimensions, validated in
+  `FUN_18020EBD4` (`if (1 < bVar1)` else `t5::corrupt_data`).
+- `mAB `/`mBA ` (`ICCTagLutAToB`, `FUN_18021075C` -> `FUN_180210960`) carry a **per-dimension**
+  16-byte array, and each entry is validated individually as it is read:
+
+```c
+*(uint *)(*(longlong *)(param_1 + 0x50) + (ulonglong)bVar18 * 4) = (uint)bVar3;
+if (*(uint *)(*(longlong *)(param_1 + 0x50) + (ulonglong)bVar18 * 4) < 2) -> t5::corrupt_data
+```
+
+(3) is enforced twice: `FUN_1802053CA` traps via `if (param_3 - 5 < 0xfffffffc)` (unsigned, so
+`nIn` in [1,4] passes and 5 traps), and `FUN_18020228E` separately requires
+`nIn == channels(dataColourSpace)` with `channels` drawn from the closed 1..4 enum of §2.
+
+CLUT sizing in `mAB ` also goes through the trapping checked multiply
+(`local_68 = nOut; for i: local_68 = FUN_18015AD86(&local_68, &gridPoints[i])`), and the CLUT
+precision byte is constrained to {1,2} by `if ((byte)(bVar18 - 3) < 0xfe) -> corrupt_data`.
+
+## 11. The ICC engine uses 8-bit loop counters
+
+Worth recording as a latent pattern. `ICCStepGamma::transform` (`FUN_180208560`) and five siblings
+increment their channel counter with the low byte only:
+
+```c
+uVar3 = (ulonglong)(byte)((char)uVar3 + 1);          /* wraps at 256 */
+} while (uVar3 < *(ulonglong *)(param_1 + 0x28));    /* compared against a 64-bit count */
+```
+
+A corpus-wide scan for narrowed loop increments found 12 functions; the six genuine ones are all in
+the ICC engine (`FUN_180207046`, `FUN_180208560`, `FUN_18020A310`, `FUN_18020AC50`,
+`FUN_18020B4E0`, `FUN_18020BF90`) and all compare against the same channel count at `this+0x28`.
+Harmless today because that count is `nIn`/`nOut` in [1,4]; it would become an infinite loop (not
+an overflow — the index also wraps, so writes stay inside the first 256 slots) if any ICC step were
+ever instantiated with more than 255 channels. The same scan's hits in
+`JP2KEbcotDecodingPasses_8g` are pointer arithmetic misparsed by the regex, not counters.
+
+## 12. Automated scans run this round
+
+Three corpus-wide scans, all over the 68,382-function pseudocode. Recorded with their outcomes so
+they are not rebuilt:
+
+| scan | result |
+|---|---|
+| **memcpy with a length from a different base object than the destination** (1,557 `FUN_1809E1E60` sites parsed) | 14 hits; 13 resolved consistent, 1 is FINDING-005 |
+| **indexed writes whose index never appears in any comparison in the function** | 248 raw -> 65 after counting `!=`/`==` loop bounds as guards. Reproduces FINDING-001 (`sub_18018B4E0`) as a positive control. Sampled the attacker-reachable ones: the chunked row-pointer allocators (`FUN_18089DAB0`/`FUN_18089DBC0`) are bounded by their block-sum loop structure; `FUN_1808F7357` is the inverse-DWT row buffer, bounded as `width + left/right margin`; `FUN_1808877AE`'s write-back is the ROI/dequant pass over a code-block clipped to its subband |
+| **narrowed (8/16-bit) loop increments against wider bounds** | 12 hits, all resolved (§11) |
+
+The second scan is the reusable one: the "index never compared" predicate has a low false-negative
+rate for this codebase, because its house style is an explicit `if (count <= idx) trap` immediately
+before the store.
+
+## 13. Other targets closed cheaply this round
+
+- **PPM/PPT (packed packet headers)**, JPEG 2000's most complex state machine and the one a fuzzer
+  can never construct: **not implemented**. `FUN_18091503D` `case 0xff60: case 0xff61: return 0x1d`.
+  Nothing to audit.
+- **COM marker** (`case 0xff64`): `len = Lcom - 4` is stored as a `ushort`, so `Lcom < 4` wraps to
+  ~65532 — but the same value feeds the availability check, the allocation and the read loop, so the
+  three agree and a short `Lcom` is rejected by the availability test rather than overflowing.
+- **Cached-length packet skip** (`FUN_18088B3C0`'s else-branch, taken only on a *re-visit* to a
+  packet position, i.e. across tile-parts — a path no single-pass fuzzer reaches). The allocation
+  takes the cached length sign-extended (`movsxd rcx, [rax+4*r13]`) and the read takes it
+  zero-extended (`mov r8d, [rax+4*r13]`), which looks like a classic mismatch; it is not, because
+  `FUN_180885943` traps on a negative low-32 and on allocation failure, so the only values that
+  reach the read are those where the two extensions agree.
+- **`t3::pdf::pdfcolor::IndexedColorConverter<Byte>`** (`FUN_18015E920`): every lookup byte is
+  bounds-checked against the palette length at `this+0x18` with a trap, so a `/Indexed` space whose
+  `lookup` string is shorter than `(hival+1)*baseComps` traps instead of reading OOB. The
+  `index %= (hival+1)` clamp cannot divide by zero: the branch requires `hival < index` and `index`
+  is a byte, so `hival <= 254` and `(byte)((char)hival + 1) != 0`.
+- **`/Matte` on a soft mask** (in the undecompiled `FUN_1804EE626`). The SMask branch forces the
+  colour space to DeviceGray and hard-sets the component count to 1 (`mov dword [rbp+0x838], 1`),
+  and the `/Matte` length test is `array.size() >= 1` — which looked like the classic cross-object
+  desync, since the spec ties `/Matte` to the **parent image's** component count, not the mask's.
+  It is not a bug: `0x1800AE31C` materialises the array as a `vector<double>` and every later use,
+  including the `{0.0, 1.0, matte[0..n-1]}` rebuild at `0x1804F0D23`, takes the **actual** element
+  count from the vector. The `>= 1` test is only an is-non-empty check.
+
 ## Leads left open, in priority order
 
 1. **The Type 4 evaluator itself.** The compiler/emitter is mapped; the interpreter that consumes
@@ -451,7 +584,8 @@ from `__FILE__` xrefs, which is how the ICC engine was found at all.
 
 ## Honest status
 
-No exploitable memory-corruption bug in round 11. Five surfaces that no prior round had touched
+No **exploitable** memory-corruption bug in round 11; one new concrete defect, not reachable as
+shipped (FINDING-005). Five surfaces that no prior round had touched
 (the `t3::color` ICC engine, LZW, JBIG2 segment type 53, the two large undecompiled functions, and
 the JPX packet-iteration/POC layer) are now read and clean, round 10's open CCITT question is
 answered in the negative with proof, two real spec deviations were found and shown compensated at
