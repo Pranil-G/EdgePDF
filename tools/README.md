@@ -14,6 +14,7 @@ Set the corpus root first; the scripts default to
 | `scanmemcpy.py` | memcpy sites whose length base is disjoint from the destination base |
 | `unguarded.py` / `unguarded2.py` | indexed writes whose index never appears in any comparison (3 operand forms) |
 | `narrowctr.py` | narrowed 8/16-bit loop increments compared against wider bounds |
+| `glue.py ls <regex>` / `asm <rva>` / `near <rva>` | navigator for the **symbol-assisted Edge glue corpus** (`edge_glue_154.0.4258.53`): 4,352 PDB-named `msedge.dll` functions. Crudely demangles MSVC names to their scope chain, which is enough to map the PDF subsystem's process boundaries |
 | `gen_finding006.py <outdir>` | **PoC generator** for FINDING-006. Builds conforming JPEG 2000 codestreams, JP2 containers and `/JPXDecode` PDF wrappers from scratch, including a tag-tree packet-header encoder, so arbitrary code-block/tile-part configurations can be emitted. Not a corpus tool — it needs nothing but Python |
 
 Usage notes:
