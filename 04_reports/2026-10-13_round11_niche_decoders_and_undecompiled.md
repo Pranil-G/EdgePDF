@@ -362,6 +362,56 @@ and reusing them, so there is no "reset count, keep chunks" path. The chunk full
 exact, since the cursor only ever advances by `0x10` from a `0x10`-aligned start and chunk capacity
 is a whole number of records (`0x20` for the first chunk, `0x100` after).
 
+## 9. JPX packet iteration, POC clamping and the per-layer array — clean
+
+Follow-on from §6, reaching the layer that lead 4 named. The progression walker is
+`FUN_18088f0e2` (random access; measured by FINDING-002 as the path Edge always takes) with
+`FUN_18088ce7a` as the sequential sibling. Per-precinct dispatch is `FUN_18088ebca` ->
+`FUN_18088b6c6` -> `FUN_18088a218`.
+
+`FUN_18088b6c6` both reads and writes a per-layer array at `param_1[3] + layerIdx * 8` **before**
+any bound test on `layerIdx` (its own guards are `layerIdx <= param_1[2]`, the last-layer
+watermark, and an equality against `layers - 1`). That array is allocated in `FUN_18088b238` as
+
+```c
+lVar2 = FUN_180885adf((longlong)*(int *)(*(longlong *)(*param_1 + 0x38) + 0x44), 8);  // layers * 8
+```
+
+so it has exactly `layers` entries and the write is only safe if `layerIdx < layers` is guaranteed
+by the caller. It is — and the interesting part is that the guarantee survives a **POC**
+(progression-order change) marker, which is where this bug class normally lives:
+
+```c
+local_108 = *(uint *)(*(longlong *)(lVar13 + 0x38) + 0x44);        // cs->layers, from COD
+if (*(char *)(lVar13 + 0x50) == '\0') { local_a0 = local_108; }    // no POC
+else {
+    uVar2    = *(ushort *)(*(longlong *)(lVar24 + 0x20) + local_110 * 2);   // LYEpoc
+    local_a0 = (uint)uVar2;
+    if ((int)local_108 < (int)(uint)uVar2) local_a0 = local_108;    // CLAMP to cs->layers
+}
+for (uVar25 = 0; (int)uVar25 < (int)local_a0; uVar25 = uVar25 + 1)  // layer loop
+```
+
+All three POC end values are clamped to their COD/SIZ-derived maxima, not trusted:
+`LYEpoc -> min(LYEpoc, cs->layers)`, `REpoc -> min(REpoc - 1, cs->L)`, and
+`CEpoc -> min(CEpoc, numComponents)`. COD itself rejects `layers == 0`
+(`if ((uVar12 & 0xffff) == 0) return 10`), so the range is [1, 65535] and the loop cannot run with
+an index the array was not sized for.
+
+The precinct index is bounded too, in `FUN_18088ebca`:
+
+```c
+param_2 < *(int *)(lVar5 + 0x4c) * *(int *)(lVar5 + 0x48)      // idx < precinctsW * precinctsH
+```
+
+That 32-bit product cannot wrap: SIZ caps tile dimensions at `0x7ffe`
+(`if (0x7ffe < uVar17) return 0xe`) and precinct sizes are at least 1, so each count is at most
+32768 and the product at most 2^30.
+
+The resolution index is the one quantity *not* re-checked here — which is exactly FINDING-002's
+latent path, already documented and guarded upstream by `sub_18088F0E2`'s decomposition-level
+equality test.
+
 ## Leads left open, in priority order
 
 1. **The Type 4 evaluator itself.** The compiler/emitter is mapped; the interpreter that consumes
@@ -379,9 +429,11 @@ is a whole number of records (`0x20` for the first chunk, `0x100` after).
    `FUN_1808f9580` (18,870 B) — the generated JPEG 2000 coding-pass bodies. Four functions, ~110 KB,
    entirely unread by any round. Lowest density of validation logic per byte, but the highest raw
    volume of attacker-driven index arithmetic in the module.
-4. **The JPX packet-header layer** (tag trees, Lblock, coding-pass counts, segment lengths) —
-   reached from `FUN_18088f0e2` / `FUN_18088ce7a` via `FUN_18088ebca` / `FUN_18088ed62`. This is
-   where every real-world JPEG 2000 RCE has lived and it was not reached this round.
+4. **The JPX packet *header* parse proper** — tag trees, Lblock growth, coding-pass counts and
+   code-block segment lengths, inside `FUN_18088b3c0` and `FUN_18088a218`. §9 audited the
+   *iteration* around it (progression order, POC clamping, precinct and layer indexing) and that
+   is clean; the bit-level header decode itself is still unread, and it is where every real-world
+   JPEG 2000 RCE has lived. Highest-value remaining lead.
 5. **`msPdfToEmfConverterMemorySafetyFix`** — a feature flag named after a memory-safety fix in the
    PDF->EMF print converter, still unexamined (round 10 noted it). Requires print, so user
    interaction caps severity.
@@ -399,11 +451,12 @@ from `__FILE__` xrefs, which is how the ICC engine was found at all.
 
 ## Honest status
 
-No exploitable memory-corruption bug in round 11. Four surfaces that no prior round had touched
-(the `t3::color` ICC engine, LZW, JBIG2 segment type 53, and the two large undecompiled functions)
-are now read and clean, round 10's open CCITT question is answered in the negative with proof, two
-real spec deviations were found and shown compensated at their use sites, and one decompiler
-artifact that reads as a heap overflow was corrected against machine code so it is not re-reported.
+No exploitable memory-corruption bug in round 11. Five surfaces that no prior round had touched
+(the `t3::color` ICC engine, LZW, JBIG2 segment type 53, the two large undecompiled functions, and
+the JPX packet-iteration/POC layer) are now read and clean, round 10's open CCITT question is
+answered in the negative with proof, two real spec deviations were found and shown compensated at
+their use sites, and one decompiler artifact that reads as a heap overflow was corrected against
+machine code so it is not re-reported.
 
 The module's pattern continues to hold across every new surface: checked add/multiply helpers that
 trap rather than return, unsigned comparisons so wrapped values fail closed, allocation sizes and
