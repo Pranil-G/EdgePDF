@@ -6,8 +6,9 @@
 | Component | **First-party Microsoft code** — `…\dcpdf\t5\firstparty\jp2k\source\common\src\JP2KImageMap.cpp` |
 | Reached by | a `/Filter /JPXDecode` image XObject in **any** PDF — zero-click, no user interaction, default-on |
 | Class | Heap buffer overflow (OOB write) **and** heap OOB read, both of attacker-chosen length, into/out of attacker-sized pool chunks |
-| Status | **Reachable on both tile-decode paths.** It passes the one guard that made FINDING-002 non-exploitable. |
-| Severity | **Critical** (renderer RCE candidate) |
+| Status | **Confirmed exploitable on Windows in Edge 154. Fixed in Edge 155.** Reachable on both tile-decode paths; it passes the one guard that made FINDING-002 non-exploitable. |
+| Fix | Edge 155 snapshots `+0x0C`, `+0x0F`, `+0x30` (`xcb`) and `+0x34` (`ycb`) before the `COC` copy and rejects any change when `TPsot != 0` (comparisons near RVAs `0x88D517`/`0x88D523`, error path `0x88D7DB`) — suggested fix #2 below. What the allowlist leaves open: [FINDING-006 follow-up](FINDING-006-followup_edge155_fix_analysis_and_residual_surface.md). |
+| Severity | **Critical** (OOB write). Note that the Edge 154 crash lands on a `ud1` at `mspdf.dll+0x900AFF`, which is a compiler-unreachable trap *downstream* of both writes, not a guard in front of them — it clips the follow-on controlled-write escalation. See the follow-up §1. |
 | PoC | [`05_poc/FINDING-006/`](../05_poc/FINDING-006/) — `poc_min.pdf` is 786 bytes and **decodes cleanly under both FFmpeg and OpenJPEG** |
 
 ## Summary
