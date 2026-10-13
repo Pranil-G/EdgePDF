@@ -53,7 +53,8 @@ OpenJPEG via poppler `pdftoppm` on the PDF wrapper.
 Two things follow.
 
 **`poc_min` is a conforming file that both reference decoders accept
-without a single warning.** With a 4 x 4 image the mutated code-block size
+without a single warning, and it decodes to byte-identical output to
+`control_min`** — same PGM under FFmpeg, same PNG under OpenJPEG. With a 4 x 4 image the mutated code-block size
 still yields a 1 x 1 code-block grid, so re-deriving the grid from the `COC`
 changes nothing about how the packet header parses. There is no "the input
 was malformed" counterargument available for it: the only unusual thing in

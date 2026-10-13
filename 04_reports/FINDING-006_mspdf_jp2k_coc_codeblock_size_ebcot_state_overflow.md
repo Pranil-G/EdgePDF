@@ -323,9 +323,13 @@ headers, the tag-tree coding (including the 256-leaf case), the two-tile-part sp
 `TPsot`/`TNsot`, the `Psot` lengths and the 1024 x 4 code-blocks are all accepted by an independent
 implementation.
 
-**`poc_min` is accepted by both.** With a 4 x 4 image the mutated code-block size still gives a
-1 x 1 grid, so re-deriving the grid from the `COC` changes nothing about the packet header; the file
-is simply conforming. There is no "malformed input" counterargument for it.
+**`poc_min` is accepted by both, and decodes to byte-identical output to its control.** Under
+FFmpeg the two PGMs are identical; under OpenJPEG the two rendered PNGs are identical. With a 4 x 4
+image the mutated code-block size still gives a 1 x 1 grid, so for a conforming decoder the
+tile-part `COC` is semantically a no-op — the file's decoded result is indistinguishable from a
+benign one. There is no "malformed input" counterargument available for it: it is a valid JPEG 2000
+image that happens to re-state its code-block size in a tile-part header, which is what that marker
+is for.
 
 **The rejections on the wider variants are what correct handling looks like**, and OpenJPEG's
 message names the mechanism: it re-derived the code-block grid from the tile-part `COC` — 4 x 16
