@@ -177,13 +177,29 @@ What it is doing is **marshalling the ranges out of the process**, which matches
 found on the Edge side: `PDFDigitalSignatureServiceImpl::SendSignerInfo` / `ValidateSignature`
 / `CertVerifyRequest`, reached through a real `mojo::Remote`.
 
-That raises one structural question worth stating but **not** worth asserting: the
-`max_end < size` bound of §5 is applied on the **fold** path (`FUN_180648F16`), while this
-**marshalling** path forwards the raw ranges with no bound of its own. If the receiving side
-re-reads the document over those ranges without re-validating, mspdf's local bound does not
-protect it. Settling that needs the host-side consumer, which is in `msedge.dll` behind the
-filtered-corpus wall — and the ordering between the two paths (whether `FUN_180648F16` fails
-closed before any marshalling happens) is also unestablished. Flagged, not claimed.
+### 5.2 Ordering: the marshalling is unbounded and happens first
+
+`FUN_18014B70E` calls **both** ByteRange paths, and the order is now established:
+
+| position in `FUN_18014B70E` | call | bound applied? |
+|---|---|---|
+| line 266 | `FUN_180648DF2(param_2, &local_278)` — marshal raw ranges out | **none** |
+| line 508 | `FUN_180648F16(local_a8)` — the `max_end < size` verification fold | yes |
+
+So the raw `(offset, length)` pairs are serialised into the `u32` array roughly 240 lines of
+reconstructed code **before** any bound is applied, and the two calls do not even operate on the
+same object (`param_2` vs. the locally built `local_a8`), so the later check is not gating the
+earlier marshalling.
+
+What this does *not* establish is impact, and the limit is the same wall as the earlier leads:
+the marshalled array goes to `msedge.dll`, and whether the receiver re-reads the document over
+those ranges — or merely records them alongside a hash it computed itself — decides whether the
+missing bound matters. `mspdf.dll`'s own later check protects only `mspdf.dll`'s own use.
+
+**Status: a bounded lead, not a finding.** What is verified is that the out-of-process
+marshalling of attacker-controlled `/ByteRange` pairs carries no bound and precedes the local
+one. What is needed is the host-side consumer of `SendSignerInfo` / `ValidateSignature` —
+`msedge.dll` for the build under test, the same artifact the multipart loader lead needs.
 
 ## 6. Next
 
