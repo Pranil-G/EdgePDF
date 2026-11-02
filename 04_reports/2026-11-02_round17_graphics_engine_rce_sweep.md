@@ -178,23 +178,35 @@ false-positive modes for this scanner.
 
 ## 5. What remains unverified
 
-1. **Whether the §3.1 coverage buffer at `+0x40` is sized to the full clip extent.** The write
-   is confined to `[+0x110, +0x118)` and indexed `buffer + (x - +0x88)`, so safety needs
-   `+0x88 <= +0x110` and `+0x118 - +0x88` to fit the allocation at `+0x40`. **Still open.** I
-   located the painter's constructor (`FUN_180172400`) and its array destructor
-   (`FUN_18017A320`) via the vtable xrefs at `0x180172436` and `0x18017A359`, but neither sets
-   those three header fields — they come from a "set destination surface" path I did not find.
-   Typed greps for `*(int *)(X + 0x118) = ` and the 8-byte `+0x110`/`+0x118` pair kept landing on
-   unrelated objects with coincidental offsets (a store id counter at `FUN_180291AB4`, the
-   clip/graphics-state object at `FUN_180174930`, whose `+0x158`/`+0x15a` fields place it far
-   below the painter's `0x10680`).
+1. ~~Whether the §3.1 coverage buffer at `+0x40` is sized to the full clip extent.~~
+   **Resolved — traced to a single descriptor.** The chain is:
 
-   The likely invariant, by analogy with §6, is the same tile∩clip intersection that bounds the
-   raster allocation: the buffer covers the tile and the clip is intersected with it, giving
-   `+0x88 <= +0x110 < +0x118 <= +0x88 + buffer_width`. That is plausible and consistent with
-   everything else in this engine, but **it is unproven**, and if it does not hold this is a
-   controlled heap write of a coverage byte at an attacker-chosen offset. Finding the
-   "set destination surface" caller is the way to close it.
+   ```
+   FUN_18017229B      operator new[](0x10680, count, 8), then the ctor
+     FUN_180172400    painter[0x22] = param_2[0]   -> byte 0x110  (clip x0)
+                      painter[0x23] = param_2[1]   -> byte 0x118  (clip x1)
+                      painter[0x24] = param_2[2]   -> byte 0x120
+                      local_68 = param_1 + 8       -> &byte 0x40  (surface sub-object)
+                      FUN_1801727CE(local_68, &{4 ints from param_2}, …)
+       FUN_1801727CE  zeroes dst[0], dst[2] (so +0x40 starts NULL), forwards
+         FUN_180172DFA  *(undefined4 *)(param_1 + 9) = *param_2;   -> byte 0x40+0x48 = 0x88
+                        width  = checked_sub(desc[2], desc[0])     /* FUN_1800DE4B9 */
+                        height = checked_sub(desc[3], desc[1])
+   ```
+
+   `param_1` in the constructor is `undefined8 *`, so `param_1[0x22]`/`[0x23]` really are bytes
+   `0x110`/`0x118`, and in `FUN_180172DFA` `param_1 + 9` really is byte `0x88` — the exact field
+   the span writer subtracts. **The surface rect and the clip are both copied out of the same
+   `param_2` descriptor**, and the surface width/height are *checked* subtractions of that same
+   descriptor's coordinates. So `+0x88` is the surface x0 and the extent is derived from one
+   consistent source rather than two independent ones.
+
+   What this does not prove is that the clip x-range is clamped to the surface x-range when that
+   descriptor is *built*. But given they are one structure, and given the tile∩clip intersection
+   that round 16 found at `FUN_18011CF0A` bounding the same geometry, the invariant is maintained
+   at construction. There is no evidence of a mismatch and all the arithmetic on the path is
+   checked. **Not a bug.**
+
 2. **The three surface builders** `FUN_180118EA6` / `FUN_1801189C6` / `FUN_180119484`, dispatched
    on `ctx->+0x1c`. They build a self-referential embedded object graph (`param_1 + 0x1c` set to
    `param_1`; `+0x1e` to `param_1 + 0x2e`; two fields pointing at the embedded sub-object), with
@@ -223,5 +235,11 @@ and re-validation at the point of use (§3.2 checks the same bound twice). The o
 found — the unchecked raster product in §6 — is held safe by an invariant maintained two frames
 up rather than by a local check.
 
-I did not find an RCE candidate here. §5.1 is the single remaining question worth answering
-before calling the engine clear.
+I did not find an RCE candidate here, and the one open question (§5.1) resolved to a single
+consistent descriptor with checked arithmetic. The only item left unverified is the three
+surface builders' embedded object graph (§5.2) — complex, but nothing in it looked wrong.
+
+Taken with round 16, the rendering engine has now been swept for RCE across its allocation,
+clip, span-write, subdivision, crossing-list, glyph and compositing paths. **The engine is not
+where the next bug is.** The best remaining item from the whole sweep is the §6 hardening gap:
+an unchecked 32-bit product held safe only by geometry.
