@@ -147,16 +147,50 @@ and the three steps compose correctly:
 
 So the thin-looking collector is backed by a correct bound at the point of use. Not a bug.
 
-The for-each sibling `FUN_180648DF2` (visitor over each pair) is called from `FUN_18014B70E`
-and `FUN_18014F210`; that is the remaining unexamined half of this path.
+### 5.1 The visitor half — marshalling, not reading
+
+The for-each sibling `FUN_180648DF2(sig, visitor)` calls `(**(code **)(visitor + 0x18))(visitor + 8, element)`
+per pair. At `FUN_18014B70E`'s call site (`0x18014BC0A`) the visitor is built as:
+
+```c
+FUN_18095977E(&local_c8, 4);        /* a container of 4-byte elements */
+local_260 = FUN_18014E480;          /* visitor+0x18 = the callback */
+pppuStack_270 = &local_c8;          /* visitor+0x08 = the capture */
+FUN_180648DF2(param_2, &local_278);
+```
+
+and the callback `FUN_18014E480` (105 B) is:
+
+```c
+local_24 = *param_2;      /* low 32 bits of element[0] = offset */
+uVar1    = param_2[2];    /* low 32 bits of element[1] = length */
+FUN_180959810(*param_1, &local_24);   /* append offset */
+local_24 = uVar1;
+FUN_180959810(*param_1, &local_24);   /* append length */
+```
+
+**It never reads document bytes** — it serialises the ranges into a `u32` array. The 32-bit
+truncation is lossless, because the collector already bounded both values to `[0, 2^31-1]`. So
+there is no local out-of-bounds here either.
+
+What it is doing is **marshalling the ranges out of the process**, which matches what round 12
+found on the Edge side: `PDFDigitalSignatureServiceImpl::SendSignerInfo` / `ValidateSignature`
+/ `CertVerifyRequest`, reached through a real `mojo::Remote`.
+
+That raises one structural question worth stating but **not** worth asserting: the
+`max_end < size` bound of §5 is applied on the **fold** path (`FUN_180648F16`), while this
+**marshalling** path forwards the raw ranges with no bound of its own. If the receiving side
+re-reads the document over those ranges without re-validating, mspdf's local bound does not
+protect it. Settling that needs the host-side consumer, which is in `msedge.dll` behind the
+filtered-corpus wall — and the ordering between the two paths (whether `FUN_180648F16` fails
+closed before any marshalling happens) is also unestablished. Flagged, not claimed.
 
 ## 6. Next
 
 Three live threads, all in code available in full:
 
-1. **`FUN_18014B70E`'s `/ByteRange` visitor** (call site `0x18014BC0A`) and `FUN_18014F210`
-   (`0x18014F298`) — the half of §5 not yet read. The bound in `FUN_180648F16` protects the
-   *fold* path; whether the visitor path is gated the same way is unverified.
+1. **`FUN_18014F210`** (`0x18014F298`) — the second visitor call site, not yet read; and the
+   cross-boundary question in §5.1, which needs the host side.
 2. **The thread-host runner**, via the `thread_host_impl.cc` constructor, to settle §2's
    cross-thread lifetime question.
 3. **`asn1c::ParseSignedData`** and the bespoke `pdf_signature::PKCS1::ParseSignature` — the
