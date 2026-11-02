@@ -24,6 +24,11 @@ Usage notes:
 - `.rdata` reads against the raw DLL need **file offset = RVA - 0x1400**; `.data` needs
   **RVA - 0x2000**. Section containment must use virtual size only — `.text`'s file-aligned raw
   size otherwise swallows `.rdata` RVAs and constant tables decode as plausible x86.
+- **Ghidra's `local_NN` names are not frame offsets.** They are allocation-order labels, and
+  they routinely disagree with the real layout (in `FUN_1805C04BD`, `local_58` sits at
+  `[rbp+0x70]` and `local_70` at `[rbp+0x58]`). Before claiming a computed value reaches a
+  call, match the stores to the call's actual argument registers in the disassembly, and
+  check whether the slot is ever read again. This produced one retracted finding.
 - Pseudocode is reconstructed. Ghidra drops out-parameters on some checked-arithmetic helpers
   (see round 11 §4 for a case that reads as a heap overflow in pseudocode and is correct in
   machine code), so confirm any candidate against `assembly/mspdf_full_intel.asm`.

@@ -1,11 +1,46 @@
-# Round 13 — unvalidated `/T` in the linearization dictionary yields a negative range start
+# Round 13 — unvalidated `/T` in the linearization dictionary — **RETRACTED**
+
+> ## RETRACTION (same day)
+>
+> **The impact claim in this report is wrong. The computed values are dead stores.**
+>
+> I claimed `start = T - 0x32` and `length = available_size - start` were "handed to" the data
+> source's vtable slot `+0x20`. They are not. Re-reading the frame:
+>
+> - `lea rbp, [rsp + 0x80]` — `rbp` is a frame pointer, and the EH state slot is `[rbp+0x88]`.
+> - `start` is written to `[rbp+0x58]` and `length` to `[rbp]`. **Neither slot is read again
+>   anywhere in the remaining ~1,000 bytes of the function.**
+> - The virtual call at `0x1805C08C0` takes `rdx = &[rbp+0x70]`, which is **zeroed by the
+>   `movapd` three instructions earlier**, and `r8 = &[rbp+0x30]`, an out-parameter. It never
+>   receives the range.
+> - The one way the stores could still be live — the stack addresses escaping to
+>   `FUN_1805B867C` near the top of the function — is ruled out: that function dereferences its
+>   arguments (`*param_3`, `*param_4`, `*param_5`, `*param_6`) and passes the *values* into
+>   `FUN_18026DCDA`, retaining no addresses.
+>
+> **Root cause of my error:** I read Ghidra's local *names* as if they indicated frame offsets.
+> They do not. In this function Ghidra's `local_58` lives at `[rbp+0x70]` and its `local_70`
+> lives at `[rbp+0x58]` — the names are allocation-order labels, not offsets. The four repeated
+> `lea rcx,[rbp+0x70]` / `lea r8,[rbp+0x58]` pairs are the key-lookup idiom, which is what gave
+> the mapping away.
+>
+> **What survives** (all independently verified and still accurate): §2's control flow and
+> gating, the fact that `/T` is read with a type check and no range check, the `.rdata` key
+> names `/L` `/T` `/E`, and §3's observation that the slot-`+0x20` call is a prefetch whose
+> result is discarded before `FUN_1805B211E` does the real scan. **What does not survive** is
+> any claim of attacker-reachable impact: §4's table and §5's "two outcomes" are void, because
+> nothing consumes the arithmetic. There is no finding here.
+>
+> Why a compiler would keep dead stores is unexplained — most likely a remnant of a validation
+> that was removed, or a branch that inlined away. It is not a security issue either way.
+
 
 | | |
 |---|---|
 | Module | `mspdf.dll` 154.0.4258.33, `FUN_1805C04BD` (the `/Linearized` dictionary handler) |
 | Reached by | a **linearized** PDF — zero-click, no interaction. The linearization dict is the document's first object, so this runs during initial load. |
 | Class | unvalidated signed offset + unchecked length handed to the document data source's range/prefetch entry point |
-| **Status** | **Lead with the arithmetic verified in machine code.** Whether it is a bug depends on one unresolved question (§5). |
+| **Status** | **RETRACTED — not a bug.** The arithmetic is real but both results are dead stores; see the retraction above. |
 
 ## 1. Why this surface
 
