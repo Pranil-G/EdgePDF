@@ -15,6 +15,7 @@ Set the corpus root first; the scripts default to
 | `unguarded.py` / `unguarded2.py` | indexed writes whose index never appears in any comparison (3 operand forms) |
 | `narrowctr.py` | narrowed 8/16-bit loop increments compared against wider bounds |
 | `glue.py ls <regex>` / `asm <rva>` / `near <rva>` | navigator for the **symbol-assisted Edge glue corpus** (`edge_glue_154.0.4258.53`): 4,352 PDB-named `msedge.dll` functions. Crudely demangles MSVC names to their scope chain, which is enough to map the PDF subsystem's process boundaries |
+| `vt.py <vtable-VA> [slots]` / `--find <regex>` | RTTI **vtable resolver**: dumps a vtable from the binary and names each slot's target, for breaking `(**(code **)(*obj + 0xN))()` walls. Caveat: identical COMDAT folding makes trivial 4-5 byte slots (plain getters, deleting-destructor forwarders) shared across unrelated classes, so they identify nothing — useful for substantial slots, misleading for stubs |
 | `gen_finding006.py <outdir>` | **PoC generator** for FINDING-006. Builds conforming JPEG 2000 codestreams, JP2 containers and `/JPXDecode` PDF wrappers from scratch, including a tag-tree packet-header encoder, so arbitrary code-block/tile-part configurations can be emitted. Not a corpus tool — it needs nothing but Python |
 
 Usage notes:
@@ -24,6 +25,11 @@ Usage notes:
 - `.rdata` reads against the raw DLL need **file offset = RVA - 0x1400**; `.data` needs
   **RVA - 0x2000**. Section containment must use virtual size only — `.text`'s file-aligned raw
   size otherwise swallows `.rdata` RVAs and constant tables decode as plausible x86.
+- **Enumerate every `__FILE__` path before concluding a component is absent.**
+  `strings -a -n 20 <dll> | grep dcpdf` is 29 lines for `mspdf.dll`. Grepping for a
+  component's *identifiers* under one guessed subtree produced a wrong "there is no JS
+  engine here" conclusion twice (rounds 12 and 13); the JS bridge is under
+  `pdfcontrol\datamodel\dcpdf\js\`, not `t5\`.
 - **Ghidra's `local_NN` names are not frame offsets.** They are allocation-order labels, and
   they routinely disagree with the real layout (in `FUN_1805C04BD`, `local_58` sits at
   `[rbp+0x70]` and `local_70` at `[rbp+0x58]`). Before claiming a computed value reaches a
