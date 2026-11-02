@@ -111,16 +111,53 @@ Caveat learned here: **identical COMDAT folding makes trivial slots useless for 
 identification.** A 4–5 byte getter body is shared across unrelated classes. The tool is
 informative for substantial slots and misleading for stubs.
 
-## 5. Next
+## 5. Signature `/ByteRange` — audited end to end, correctly defended
 
-Two live targets, both in code available in full:
+Target 1 below was taken up immediately. `/ByteRange` is the classic signature bug (an array of
+`[offset length offset length …]` saying which bytes are signed; implementations must keep it
+in-bounds, ordered and covering). It is zero-click for signed PDFs. **The chain is sound** —
+recorded so nobody re-walks it:
 
-1. **`FUN_18014B70E`** (4,042 bytes) — turned out *not* to be JS. It contains
-   `"adbe.pkcs7.detached"`, so it is the **digital-signature** driver. Combined with what round
-   12 found in this binary (`asn1c::ParseSignedData`, a bespoke `pdf_signature::PKCS1::ParseSignature`,
-   statically linked BoringSSL), that is a large, niche, first-party CMS/X.509 parser that runs
-   on open for signed PDFs. Not structurally fuzzer-proof, but signature paths are commonly
-   stubbed or unreached in harnesses because they need a well-formed signature to get past the
-   early checks.
+| step | function | what it does |
+|---|---|---|
+| collect | `FUN_180647B78` (664 B) | looks up `"ByteRange"`, walks the array in pairs (`0x18`-byte elements), extracts each as **`uint`** via `FUN_180237924`, and pushes `(offset, length)` into a `vector<pair<u64,u64>>` at `sig+0x180` |
+| fold | `FUN_180648E3A` → `FUN_180666600` | keeps `max(offset + length) - 1`, i.e. the highest signed byte index |
+| check | `FUN_180648F16` | `if (max_end < size) verify; else clean up` |
+
+The collector validates only that each value is non-negative:
+
+```c
+if ((int)uVar2 < 0) { FUN_18002B459(); goto trap; }   /* offset */
+if ((int)uVar3 < 0) goto trap;                        /* length */
+FUN_1800A45BE(param_1 + 0x180, &local_128);           /* push the pair */
+```
+
+In isolation that looks thin — no overflow, ordering or coverage check. But it is **sufficient**,
+and the three steps compose correctly:
+
+- the signed-non-negative test bounds each value to `[0, 2^31-1]`, so the fold's 64-bit
+  `offset + length` **cannot wrap** (max ~`0xFFFFFFFE`);
+- `FUN_180666600`'s `- 1` cannot underflow either, because its guard is
+  `if (current_max < offset + length)`, which is false when the sum is 0;
+- `FUN_180648F16` gates on `max_end < local_160` (the extent from the `0x118` context
+  `FUN_18064EA82` initialises) with the **correct strict comparison** — `max_end` is the last
+  index, so `last < size` is right;
+- an out-of-range `/ByteRange` takes the `else` branch, which only cleans up. The signature
+  ends up unverified rather than causing an OOB read. **Fails closed.**
+
+So the thin-looking collector is backed by a correct bound at the point of use. Not a bug.
+
+The for-each sibling `FUN_180648DF2` (visitor over each pair) is called from `FUN_18014B70E`
+and `FUN_18014F210`; that is the remaining unexamined half of this path.
+
+## 6. Next
+
+Three live threads, all in code available in full:
+
+1. **`FUN_18014B70E`'s `/ByteRange` visitor** (call site `0x18014BC0A`) and `FUN_18014F210`
+   (`0x18014F298`) — the half of §5 not yet read. The bound in `FUN_180648F16` protects the
+   *fold* path; whether the visitor path is gated the same way is unverified.
 2. **The thread-host runner**, via the `thread_host_impl.cc` constructor, to settle §2's
    cross-thread lifetime question.
+3. **`asn1c::ParseSignedData`** and the bespoke `pdf_signature::PKCS1::ParseSignature` — the
+   CMS/X.509 parser proper, which `/ByteRange` only guards the hashing half of.
