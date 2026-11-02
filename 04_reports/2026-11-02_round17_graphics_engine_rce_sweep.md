@@ -112,8 +112,30 @@ if (param_2[1] == param_2[2]) FUN_180179CA2(param_2, …, piVar7, 1, …);   /* 
 else { *piVar7 = …; param_2[1] = param_2[1] + 1; }
 ```
 
-`+0x1018` is a cursor into that vector's heap storage, not into an inline 1030-int buffer. So a
+The painter's array destructor `FUN_18017A320` confirms the structure definitively and gives
+the full template signature:
+
+```
+SuperSamplingBezierRasterPainter<
+    OverscanBezierSamplerDef<ByteSignalTraits<TetraphiliaAppTraits>, 32, 32>,
+    16,                                                    /* 16 sub-samples */
+    FilteringBezierSamplerEdgeAdder<BaseOverscanBezierSamplerDef<…,32,32,1>>,
+    TextToleranceTraits<TetraphiliaAppTraits>>
+```
+
+and its teardown per record is
+
+```c
+if ((capacity != 0) && (data != inline_address))
+    FUN_180962370(data, capacity << 2);     /* operator delete(data, capacity * 4) */
+```
+
+The `data != inline_address` test is the standard **small-vector** teardown: each record carries
+inline storage and spills to the heap once the inline capacity is exceeded. `capacity << 2`
+confirms 4-byte (`int`) elements. So `+0x1018` is a cursor into whichever storage is live, and a
 path with many edges on one sub-scanline grows the vector rather than overflowing a record.
+Each painter instance is `0x10680` bytes (16 × `0x1028` records plus a `0x400` header), which the
+constructor `FUN_180172400` confirms with its `while (lVar10 != 0x10280)` init loop.
 
 ### 3.4 Painter entry — `FUN_1802C1F40`
 
@@ -158,9 +180,21 @@ false-positive modes for this scanner.
 
 1. **Whether the §3.1 coverage buffer at `+0x40` is sized to the full clip extent.** The write
    is confined to `[+0x110, +0x118)` and indexed `buffer + (x - +0x88)`, so safety needs
-   `+0x118 - +0x88` to fit the allocation at `+0x40` and `+0x88 <= +0x110`. I could not pin
-   where those three fields are set — `FUN_180178A78` sets only `+0x3fc`, and the painter's
-   constructor was not located. This is the one open question in the engine proper.
+   `+0x88 <= +0x110` and `+0x118 - +0x88` to fit the allocation at `+0x40`. **Still open.** I
+   located the painter's constructor (`FUN_180172400`) and its array destructor
+   (`FUN_18017A320`) via the vtable xrefs at `0x180172436` and `0x18017A359`, but neither sets
+   those three header fields — they come from a "set destination surface" path I did not find.
+   Typed greps for `*(int *)(X + 0x118) = ` and the 8-byte `+0x110`/`+0x118` pair kept landing on
+   unrelated objects with coincidental offsets (a store id counter at `FUN_180291AB4`, the
+   clip/graphics-state object at `FUN_180174930`, whose `+0x158`/`+0x15a` fields place it far
+   below the painter's `0x10680`).
+
+   The likely invariant, by analogy with §6, is the same tile∩clip intersection that bounds the
+   raster allocation: the buffer covers the tile and the clip is intersected with it, giving
+   `+0x88 <= +0x110 < +0x118 <= +0x88 + buffer_width`. That is plausible and consistent with
+   everything else in this engine, but **it is unproven**, and if it does not hold this is a
+   controlled heap write of a coverage byte at an attacker-chosen offset. Finding the
+   "set destination surface" caller is the way to close it.
 2. **The three surface builders** `FUN_180118EA6` / `FUN_1801189C6` / `FUN_180119484`, dispatched
    on `ctx->+0x1c`. They build a self-referential embedded object graph (`param_1 + 0x1c` set to
    `param_1`; `+0x1e` to `param_1 + 0x2e`; two fields pointing at the embedded sub-object), with
