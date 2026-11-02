@@ -90,43 +90,92 @@ additionally maps `max_end` onto a document **revision** through a sorted lookup
 `0xFFFFFFFFFFFFFFFF` special-cased), which is the structure needed to say "this signature covers
 revision N of M" rather than a flat valid/invalid.
 
-## 5. The one concrete gap, and what settles it
+## 5. The full validator — six stages, abort by default
 
-The offset-inside-signed-range check of §3 is keyed **only on `/JS` and `/JavaScript`**. An
-object carrying neither takes the `bVar3 = true` default and is **never offset-checked** by this
-path.
+**§3 is only one stage of six, and my first reading of this section overstated the gap.**
+`FUN_18064EF36` compares the signed revision against the current document and, if anything
+changed, runs a chain whose **default is abort**:
 
-The published shadow-attack variants (Mainka, Mladenov et al., *Shadow Attacks on PDF
-Signatures*) split three ways, and only one involves JavaScript:
+```c
+if ((tree1_size == 0) && (tree2_size == 0) && (ctx->+0xf0 == 0)) {
+    uVar10 = 1;                                   /* nothing changed -> clean */
+} else {
+    uVar10 = 3;                                   /* DEFAULT: ABORT */
+    if (FUN_180650D20(ctx, max_end) != 3 && FUN_180650E1E(ctx) != 3) {
+        FUN_180651010(ctx, &rev, max_end);        /* map max_end -> revision */
+        if (rev != 0 && (ctx->+0x38 == 3 ||
+             (FUN_1806512B6(ctx) && FUN_180653162(ctx) && FUN_1806542B2(ctx))))
+            uVar10 = FUN_180655082(ctx) ^ 3;
+    }
+}
+```
 
-| variant | mechanism | covered by §3? |
+The two red-black trees (`ctx+0xb0`/`+0xb8`/`+0xc0` and `+0xc8`/`+0xd0`/`+0xd8`, walked in-order
+by `FUN_18064F3A4`, which stops early when the visitor returns 0) are the **change set** between
+the signed revision and the current document. The stages and what each covers, from their key
+references:
+
+| stage | size | keys checked |
 |---|---|---|
-| Hide | toggle `/OCProperties` optional-content visibility | **no** |
-| Replace | swap `/Annots` `/AP` appearance streams, or fonts | **no** |
-| Hide-and-Replace | new `/Root` with a substituted `/Pages` tree | **no** |
+| `FUN_180650D20` | 168 | per-object `/JS` + `/JavaScript` must lie inside the signed range (§3) |
+| `FUN_180650E1E` | 255 | structural; skipped when `ctx+0x38 == 3` |
+| `FUN_1806512B6` | 4,252 | `/Perms` `/DocMDP` `/Legal` `/OpenAction` `/Contents` |
+| `FUN_180653162` | 2,624 | `/Names` `/JavaScript` `/EmbeddedFiles` `/XFAImages` |
+| `FUN_1806542B2` | 2,263 | `/AcroForm` `/Fields` `/SigFlags` |
+| `FUN_180655082` | 2,503 | `TemplateInstantiated` |
 
-Whether those are caught **elsewhere** is the open question, and there are exactly two places
-left to look:
+That is ~11.9 KB of post-signature change validation, covering catalog permissions, the
+`/OpenAction` entry, the document-level `/Names` JavaScript tree, embedded files, the form field
+set and `/SigFlags`.
 
-1. **`FUN_18064F3A4`** — the walker `FUN_180650D20` drives. If it visits *every* object in the
-   newest revision, an appended `/OCProperties` or `/Pages` override is at least *seen*, even if
-   this callback only acts on `/JS`. If it visits only annotations, the non-JS variants are not
-   even enumerated.
-2. **The consumers of the `FUN_18062B798` permissions table** — whether `P` actually gates
-   rendering of post-signature changes, or only gates UI affordances such as form filling.
+### 5.1 The `ctx+0x38 == 3` short-circuit is correct, not a bypass
 
-Both are in `mspdf.dll`, so both are reachable with the corpus in hand.
+`ctx+0x38` is set by `FUN_18064EA82` from its third argument (`param_1[0xe] = param_3` — note
+`param_1` is `undefined4 *`, so index `0xe` **is** byte offset 0x38; the nearby
+`*(undefined4 **)(param_1 + 0x38)` stores are byte offset 0xE0, the same Ghidra pointer-scaling
+trap that caused the round-13 retraction). Its value comes from the signature's `+0x50` / `+0x54`,
+which `FUN_18064805A` sets by dispatching on `/TransformMethod`:
 
-A third question needs the Edge side and cannot be settled here: **how a partial-coverage
-signature is reported to the user.** `FUN_180651010`'s revision mapping exists, so the engine
-has the information; whether `msedge.dll` surfaces "covers an earlier revision" or flattens it
-to a green check is a UI decision in the binary behind the filtered-corpus wall. That
-distinction is the whole impact of this bug class — a forgery only matters if the UI says
-"valid".
+| `/TransformMethod` | field | value | validation |
+|---|---|---|---|
+| `DocMDP` | `+0x50` | `P - 1` → **0, 1, 2** | `(uint)(P-1) <= 2`, i.e. `P ∈ {1,2,3}`, else `t5::corrupt_data`; `P` defaults to 2 |
+| `FieldMDP` | `+0x54` | **3** | delegates to `FUN_18064C9E6` (the locked-field list) |
+| `UR3` | `+0x50` | 4 | usage-rights signature |
+| anything else | — | — | `t5::unimplemented` |
 
-## 6. Assessment
+So `+0x50` can never hold 3, and the `== 3` short-circuit fires only on the **FieldMDP** pass
+(`FUN_180648F16` runs the verification once per field, for `+0x50` then `+0x54`). Skipping the
+document-wide catalog/name-tree/form checks for a transform whose entire purpose is to lock
+specific *form fields* is the correct behaviour, not a bypass. A DocMDP signature always runs
+the full chain.
 
-This is a hardened area. The `/XFA` refusal, the signed-JavaScript rule and the DocMDP-to-
-permissions translation are all things an implementation can easily omit and Edge does not. The
-honest read is that the shadow-attack class was considered here, and the remaining doubt is
-narrow and specific (§5) rather than a likely oversight.
+## 6. The one remaining untested question
+
+No stage's key set mentions `/OCProperties`, `/Annots`, `/AP`, `/Pages` or `/Root`. The
+shadow-attack variants that work through those — Hide (toggle optional-content visibility),
+Replace (swap annotation appearance streams) and Hide-and-Replace (substitute the page tree) —
+are therefore not covered by any *per-key* stage.
+
+Whether they are caught **structurally** is the open question: the chain's default is abort, and
+the change set is enumerated object-by-object, so a changed object that no stage affirmatively
+permits may already fail. Settling it means determining what populates the two trees and whether
+any stage returns a pass for an object it did not recognise. That is reachable in `mspdf.dll`.
+
+A second question needs the Edge side and cannot be settled here: **how a partial-coverage or
+changed-since-signing document is reported to the user.** `FUN_180651010`'s revision mapping
+exists, so the engine has the information; whether `msedge.dll` surfaces "covers an earlier
+revision" or flattens it to a green check is a UI decision behind the filtered-corpus wall. That
+distinction is the entire impact of this class — a forgery only matters if the UI says valid.
+
+## 7. Assessment
+
+**This area is hardened; it is not a productive hunting ground.** The `/XFA` refusal, the
+`/TransformMethod` allowlist with `t5::unimplemented` on anything unknown, the strict `P ∈ {1,2,3}`
+range check, the signed-JavaScript rule, the DocMDP-to-permissions translation and a six-stage
+change validator with abort as its default are all things an implementation can easily omit, and
+Edge omits none of them. I came in expecting the `max_end < extent` bound to be the whole story
+and it was not.
+
+Two of my own readings in this round were wrong and are corrected above: the `/JS` check is one
+stage of six, not the only one (§5), and the `== 3` short-circuit is FieldMDP dispatch rather
+than a DocMDP `P=3` bypass (§5.1). Recording both so the corrected model is what survives.
