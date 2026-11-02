@@ -25,6 +25,14 @@ Usage notes:
 - `.rdata` reads against the raw DLL need **file offset = RVA - 0x1400**; `.data` needs
   **RVA - 0x2000**. Section containment must use virtual size only — `.text`'s file-aligned raw
   size otherwise swallows `.rdata` RVAs and constant tables decode as plausible x86.
+- **`unguarded2.py` has three known false-positive modes.** It flags an indexed write whose
+  *index variable* never appears in a comparison. Legitimate code defeats that when (a) the
+  index *expression* is checked and only then assigned to the variable, (b) the index is
+  bounded by loop structure via a different variable, or (c) Ghidra variable reuse makes a
+  `local_*`/`auStack_*` name look like a stack buffer when it is a pointer. All three were
+  hit in round 17; every hit in the graphics engine was correct code.
+- `unguarded2.py`, `scanmemcpy.py` and `tumap.py` take **address ranges** (`lo-hi`, full VA or
+  RVA) to scope a scan to one component; corpus-wide runs are too noisy to triage.
 - **Enumerate every `__FILE__` path before concluding a component is absent.**
   `strings -a -n 20 <dll> | grep dcpdf` is 29 lines for `mspdf.dll`. Grepping for a
   component's *identifiers* under one guessed subtree produced a wrong "there is no JS

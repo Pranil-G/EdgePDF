@@ -4,6 +4,10 @@ PC="/home/user/work/extract/decompiled_stack/mspdf_154.0.4258.33/pseudocode/mspd
 data=open(PC,"rb").read().decode("utf-8","replace")
 
 TARGET=sys.argv[1] if len(sys.argv)>1 else "FUN_1809e1e60"
+# optional address scoping: scanmemcpy.py <target> [lo-hi ...]
+RANGES=[tuple(int(x,16) for x in a.split("-")) for a in sys.argv[2:] if "-" in a]
+def inrange(a):
+    return (not RANGES) or any(lo<=a<=hi for lo,hi in RANGES)
 
 def split_args(s):
     args=[];depth=0;cur=""
@@ -29,6 +33,7 @@ def base_of(expr):
 ents=sorted(((int(k,16),v) for k,v in IDX.items()), key=lambda x:x[1][0])
 hits=0; flagged=[]
 for ent,(s,e) in ents:
+    if not inrange(ent): continue
     body=data[s:e]
     if TARGET not in body: continue
     for m in re.finditer(re.escape(TARGET)+r"\(", body):

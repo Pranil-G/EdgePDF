@@ -13,7 +13,10 @@ def owner(a):
         e,s,n=fns[i]
         if a < e+s+64: return (e,n,s)
     return (None,None,None)
-targets={int(k,16):v for k,v in (x.split(":") for x in sys.argv[1:])}
+def _rva(k):
+    v=int(k,16)
+    return v-0x180000000 if v>=0x180000000 else v   # accept a full VA or an RVA
+targets={_rva(k):v for k,v in (x.split(":") for x in sys.argv[1:])}
 pat=re.compile(r"^([0-9a-f]+):.*# (0x1[0-9a-f]+)$")
 res={v:{} for v in targets.values()}
 with open(ASM) as f:

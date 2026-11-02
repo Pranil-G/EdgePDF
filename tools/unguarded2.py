@@ -12,9 +12,15 @@ PATS=[
   re.compile(r"\b([A-Za-z_]\w*)\[("+CAST+r"[A-Za-z_]\w*)\]\s*="),
 ]
 CMP=re.compile(r"[<>]=?|!=|==")
+# optional address scoping: unguarded2.py [lo-hi ...]
+RANGES=[tuple(int(x,16) for x in a.split("-")) for a in sys.argv[1:] if "-" in a]
+def inrange(a):
+    return (not RANGES) or any(lo<=a<=hi for lo,hi in RANGES)
 out={}
 for k,(s,e) in IDX.items():
-    ent=int(k,16); body=data[s:e]
+    ent=int(k,16)
+    if not inrange(ent): continue
+    body=data[s:e]
     cmptext=" ".join(l for l in body.split("\n") if CMP.search(l))
     for pi,P in enumerate(PATS):
         for m in P.finditer(body):
