@@ -132,3 +132,95 @@ this engine: array indices bounds-checked with a throw at the accessor, allocati
 guarded against overflow before the multiply, and shift amounts masked. The one deviation —
 bit widths accepted outside their spec-allowed sets — lands in DoS territory rather than
 memory corruption because the bit reader is written defensively.
+
+---
+
+## 7. Font parsing — the parser is FreeType, the glue is clean
+
+Checked next, as the other classic zero-click surface. **The CFF/Type1/TrueType parsing is
+FreeType**, statically linked: `t3::fonts::parsers::FreeType` is in the RTTI alongside
+`CFFBitmapCache` and `FTBitmapCache` (which are only glyph-bitmap caches keyed by a matrix),
+and the `"CharStrings"` xref lands at `0x180929A6D`, deep in the FreeType code. `FontFile`,
+`FontFile2` and `FontFile3` are all handled.
+
+FreeType is the most heavily fuzzed font library in existence (OSS-Fuzz runs it continuously)
+and is not first-party, so it is a poor target on both yield and duplicate risk. The
+first-party part is the **glue** — which is where FINDING-005 lives. Scanned
+`0x180180000`–`0x180196000`:
+
+| scan | result |
+|---|---|
+| unguarded indexed writes | 3 candidates |
+| memcpy, length-base disjoint from dest | 1 of 7 |
+| memset / strcpy | 0 |
+
+All four resolve to things already known or correct:
+
+- `0x18018BCAB` — FINDING-005, already filed and established unreachable.
+- `0x18018B1C0` / `0x18018B1D2` — the glyph-name array, cleared in round 17.
+- `0x18018B4E0` — a cmap table builder, and worth stating because it *looks* wrong. It
+  allocates a 0x100-entry `u16` table (`memset(lVar6, 0, 0x200)`) and has two index
+  computations, one masked and one not:
+
+```c
+if (uVar3 < 0x100) {                                  /* charcode < 256 */
+    uVar7 = uVar15;                                   /* UNMASKED */
+    …
+    *(undefined2 *)(lVar6 + uVar7 * 2) = uVar10;      /* table[charcode] = gindex */
+} else if (local_70 + uVar3 < 0x100) {
+    uVar7 = uVar15 & 0xff;                            /* masked */
+    goto …;
+}
+```
+
+  The unmasked assignment sits **inside** `if (uVar3 < 0x100)`, so the charcode is provably
+  below 256 before it becomes the index; the other branch masks anyway. Bounded.
+
+## 8. Corpus-wide triage of the unguarded-write scan
+
+To make sure region-by-region picking was not missing anything, the scanner was run across the
+whole corpus: **63 candidates**. Bucketed by 64 KB region, the clusters are:
+
+| region | hits | what it is |
+|---|---|---|
+| `0x180731xxx` | 5 | image/pixel conversion — **stride**, not index (below) |
+| `0x18097axxx` / `0x18097bxxx` / `0x18097exxx` / `0x180986xxx` | 7 | CRT / library |
+| `0x18018bxxx` | 3 | font glue — cleared above |
+| `0x180926xxx` | 2 | FreeType |
+| `0x1808f7xxx` / `0x18089dxxx` | 4 | jp2k — cleared in rounds 11 and 12 |
+| `0x180a**xxx` | 8 | CRT / library |
+
+The largest cluster, `0x180731xxx`, is the same false-positive mode as §5:
+
+```c
+param_2 = param_2 + param_3;        /* advance by stride */
+*param_2             = uVar6;
+param_2[param_3]     = uVar6;
+param_2[param_3 * 2] = uVar6;
+```
+
+`param_2[0]`, `param_2[stride]`, `param_2[stride*2]` is a three-channel pixel write with a
+component stride — structure, not an unbounded walk.
+
+So the corpus-wide hit list is dominated by the four documented false-positive modes, and the
+regions that are not CRT, FreeType or library code have all been examined in earlier rounds.
+
+## 9. Where this leaves the hunt
+
+`mspdf.dll`'s first-party code has now been swept fairly comprehensively: jp2k, the ICC colour
+engine, LZW, JBIG2, CCITTFax, the signature and CMS stack, linearization, the stream buffer,
+the whole rendering engine, mesh shadings, PDF functions and the font glue. The one confirmed
+critical bug from all of it (FINDING-006) is fixed in Edge 155, and the best remaining
+hardening item is round 16's unchecked raster product.
+
+The leads with the most upside left are the ones that **need `msedge.dll`**, which this corpus
+does not contain — only a 4,352-symbol PDB-filtered disassembly of it:
+
+1. the multipart short-read / negative byte count in the PDF URL loader (round 12 report);
+2. the host-side consumer of the marshalled `/ByteRange` pairs (round 14 §5.2);
+3. how a changed-since-signing document is reported to the user (round 15 §6), which decides
+   the whole impact of the signature-forgery class;
+4. the OCR utility process, the one IPC target with a near-certain privilege gradient
+   (round 12 §3 Tier 1).
+
+Getting `msedge.dll` for the build under test unblocks all four.
