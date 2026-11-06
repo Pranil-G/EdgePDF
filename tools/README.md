@@ -30,7 +30,10 @@ Usage notes:
   index *expression* is checked and only then assigned to the variable, (b) the index is
   bounded by loop structure via a different variable, or (c) Ghidra variable reuse makes a
   `local_*`/`auStack_*` name look like a stack buffer when it is a pointer. All three were
-  hit in round 17; every hit in the graphics engine was correct code.
+  hit in round 17; every hit in the graphics engine was correct code. A fourth mode found in
+  round 18: (d) the "index" is a **stride/pitch** parameter, so `base[s]`, `base[s*2]`,
+  `base[s*3]` are structure fields rather than an unbounded walk (`FUN_18037C503`, de
+  Casteljau subdivision, callers pass the immediates 1 and 4).
 - `unguarded2.py`, `scanmemcpy.py` and `tumap.py` take **address ranges** (`lo-hi`, full VA or
   RVA) to scope a scan to one component; corpus-wide runs are too noisy to triage.
 - **Enumerate every `__FILE__` path before concluding a component is absent.**
